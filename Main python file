@@ -1,0 +1,684 @@
+# =============================================================================
+# PROJECT: Advanced Time Series Forecasting with Attention Mechanisms
+# TASK 1: Dataset Creation and Preprocessing
+# =============================================================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set random seeds for reproducibility
+np.random.seed(42)
+
+class TimeSeriesDatasetGenerator:
+    """
+    Generate synthetic multivariate time series dataset with seasonality, trends,
+    and complex inter-variable dependencies.
+
+    Features:
+    - Feature 1: Main trend component with seasonality
+    - Feature 2: Secondary trend with different seasonality
+    - Feature 3: Noise-driven component with correlation to Feature 1
+    - Feature 4: Categorical seasonal pattern
+    - Feature 5: Random walk component
+    - Feature 6: External shock events (optional)
+    """
+
+    def __init__(self, n_observations=2000, n_features=5):
+        self.n_observations = n_observations
+        self.n_features = n_features
+        self.data = None
+
+    def generate_synthetic_data(self):
+        """Generate multivariate time series with temporal dependencies."""
+        print("Generating synthetic multivariate time series dataset...")
+
+        # Time index
+        dates = pd.date_range(start='2020-01-01', periods=self.n_observations, freq='H')
+
+        # Feature 1: Main trend with strong seasonality (daily + weekly)
+        trend = np.linspace(0, 10, self.n_observations)
+        daily_seasonality = 5 * np.sin(2 * np.pi * np.arange(self.n_observations) / 24)
+        weekly_seasonality = 3 * np.sin(2 * np.pi * np.arange(self.n_observations) / (24 * 7))
+        feature1 = trend + daily_seasonality + weekly_seasonality + np.random.normal(0, 0.5, self.n_observations)
+
+        # Feature 2: Secondary trend with different seasonality patterns
+        trend2 = np.linspace(-2, 8, self.n_observations)
+        seasonal2 = 4 * np.cos(2 * np.pi * np.arange(self.n_observations) / 12)  # Different frequency
+        feature2 = trend2 + seasonal2 + 0.7 * feature1 + np.random.normal(0, 0.3, self.n_observations)
+
+        # Feature 3: Noise-driven but correlated with Feature 1
+        feature3 = 0.5 * feature1 + 0.3 * feature2 + np.random.normal(0, 1, self.n_observations)
+
+        # Feature 4: Categorical seasonal pattern (hourly patterns)
+        hourly_pattern = np.sin(2 * np.pi * (np.arange(self.n_observations) % 24) / 24)
+        feature4 = 2 * hourly_pattern + np.random.normal(0, 0.2, self.n_observations)
+
+        # Feature 5: Random walk component
+        random_walk = np.cumsum(np.random.normal(0, 0.1, self.n_observations))
+        feature5 = random_walk + 0.1 * feature1
+
+        # Combine all features
+        self.data = pd.DataFrame({
+            'timestamp': dates,
+            'feature_1': feature1,
+            'feature_2': feature2,
+            'feature_3': feature3,
+            'feature_4': feature4,
+            'feature_5': feature5
+        })
+
+        # Add static covariates (season, is_weekend)
+        self.data['season'] = self.data['timestamp'].dt.month % 12 // 3
+        self.data['is_weekend'] = self.data['timestamp'].dt.dayofweek // 5
+
+        print(f"Generated dataset with {len(self.data)} observations and {self.data.shape[1]} features")
+        return self.data
+
+    def explore_dataset(self):
+        """Generate basic exploration of the dataset."""
+        print("\n=== Dataset Exploration ===")
+        print(f"Dataset shape: {self.data.shape}")
+        print("\nFirst 5 rows:")
+        print(self.data.head())
+
+        print("\nDataset info:")
+        print(self.data.info())
+
+        print("\nDescriptive statistics:")
+        print(self.data.describe())
+
+        # Plot features
+        plt.figure(figsize=(15, 10))
+        features = ['feature_1', 'feature_2', 'feature_3', 'feature_4', 'feature_5']
+
+        for i, feature in enumerate(features, 1):
+            plt.subplot(3, 2, i)
+            plt.plot(self.data['timestamp'], self.data[feature])
+            plt.title(f'{feature} - Time Series')
+            plt.xlabel('Time')
+            plt.ylabel('Value')
+            plt.xticks(rotation=45)
+
+        plt.tight_layout()
+        plt.show()
+
+        # Correlation heatmap
+        plt.figure(figsize=(10, 8))
+        correlation_matrix = self.data[features].corr()
+        sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0)
+        plt.title('Feature Correlation Matrix')
+        plt.show()
+
+# Generate the dataset
+dataset_generator = TimeSeriesDatasetGenerator(n_observations=2000, n_features=5)
+df = dataset_generator.generate_synthetic_data()
+dataset_generator.explore_dataset()
+# =============================================================================
+# TASK 1: Data Preprocessing and Sequence Windowing
+# =============================================================================
+
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.model_selection import train_test_split
+import torch
+from torch.utils.data import Dataset, DataLoader
+
+class TimeSeriesPreprocessor:
+    """
+    Preprocess time series data for deep learning models.
+    Handles scaling, sequence creation, and train/test splits.
+    """
+
+    def __init__(self, sequence_length=168, forecast_horizon=24, test_size=0.2):
+        self.sequence_length = sequence_length
+        self.forecast_horizon = forecast_horizon
+        self.test_size = test_size
+        self.feature_scaler = StandardScaler()
+        self.target_scaler = StandardScaler()
+        self.static_scaler = MinMaxScaler()
+
+    def prepare_data(self, df, target_column='feature_1'):
+        """
+        Prepare data for time series forecasting.
+
+        Args:
+            df: DataFrame with time series data
+            target_column: Column to forecast
+
+        Returns:
+            Processed datasets and scalers
+        """
+        print("Preprocessing time series data...")
+
+        # Extract features and target
+        time_features = ['feature_1', 'feature_2', 'feature_3', 'feature_4', 'feature_5']
+        static_features = ['season', 'is_weekend']
+
+        # Scale features
+        features_scaled = self.feature_scaler.fit_transform(df[time_features])
+        target_scaled = self.target_scaler.fit_transform(df[[target_column]])
+        static_scaled = self.static_scaler.fit_transform(df[static_features])
+
+        # Create sequences
+        X, y, X_static = self._create_sequences(
+            features_scaled, target_scaled, static_scaled
+        )
+
+        # Train-test split (maintaining temporal order)
+        split_idx = int(len(X) * (1 - self.test_size))
+
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+        X_static_train, X_static_test = X_static[:split_idx], X_static[split_idx:]
+
+        print(f"Training sequences: {X_train.shape}")
+        print(f"Testing sequences: {X_test.shape}")
+        print(f"Static features train: {X_static_train.shape}")
+        print(f"Static features test: {X_static_test.shape}")
+
+        return {
+            'X_train': X_train, 'X_test': X_test,
+            'y_train': y_train, 'y_test': y_test,
+            'X_static_train': X_static_train, 'X_static_test': X_static_test,
+            'feature_scaler': self.feature_scaler,
+            'target_scaler': self.target_scaler,
+            'static_scaler': self.static_scaler
+        }
+
+    def _create_sequences(self, features, target, static_features):
+        """Create input sequences and targets for time series forecasting."""
+        X, y, X_static = [], [], []
+
+        for i in range(len(features) - self.sequence_length - self.forecast_horizon + 1):
+            X.append(features[i:(i + self.sequence_length)])
+            y.append(target[i + self.sequence_length:i + self.sequence_length + self.forecast_horizon])
+            X_static.append(static_features[i + self.sequence_length])
+
+        return np.array(X), np.array(y), np.array(X_static)
+
+class TimeSeriesDataset(Dataset):
+    """PyTorch Dataset for time series data."""
+
+    def __init__(self, X, y, X_static):
+        self.X = torch.FloatTensor(X)
+        self.y = torch.FloatTensor(y)
+        self.X_static = torch.FloatTensor(X_static)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx], self.X_static[idx]
+
+# Preprocess the data
+preprocessor = TimeSeriesPreprocessor(sequence_length=168, forecast_horizon=24)
+processed_data = preprocessor.prepare_data(df, target_column='feature_1')
+
+# Create PyTorch datasets and dataloaders
+train_dataset = TimeSeriesDataset(
+    processed_data['X_train'],
+    processed_data['y_train'],
+    processed_data['X_static_train']
+)
+
+test_dataset = TimeSeriesDataset(
+    processed_data['X_test'],
+    processed_data['y_test'],
+    processed_data['X_static_test']
+)
+
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+print(f"DataLoader prepared: {len(train_loader)} training batches, {len(test_loader)} test batches")
+
+# =============================================================================
+# TASK 3: Baseline Models - SARIMA and LSTM with Hyperparameter Tuning
+# =============================================================================
+
+import warnings
+warnings.filterwarnings('ignore')
+import statsmodels.api as sm
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import numpy as np
+
+# =============================================================================
+# SARIMA Baseline Model
+# =============================================================================
+
+class SARIMAModel:
+    """
+    SARIMA model for time series forecasting with hyperparameter tuning.
+    """
+
+    def __init__(self, target_series):
+        self.target_series = target_series
+        self.best_model = None
+        self.best_params = None
+
+    def grid_search(self, p_range=range(0, 3), d_range=range(0, 2),
+                   q_range=range(0, 3), P_range=range(0, 2),
+                   D_range=range(0, 2), Q_range=range(0, 2), s=24):
+        """
+        Grid search for SARIMA hyperparameter tuning.
+        """
+        print("Performing SARIMA hyperparameter tuning...")
+        best_aic = np.inf
+        best_params = None
+
+        # Use smaller subset for faster grid search
+        train_subset = self.target_series[:500]
+
+        for p in p_range:
+            for d in d_range:
+                for q in q_range:
+                    for P in P_range:
+                        for D in D_range:
+                            for Q in Q_range:
+                                try:
+                                    model = SARIMAX(
+                                        train_subset,
+                                        order=(p, d, q),
+                                        seasonal_order=(P, D, Q, s),
+                                        enforce_stationarity=False,
+                                        enforce_invertibility=False
+                                    )
+                                    fitted_model = model.fit(disp=False)
+
+                                    if fitted_model.aic < best_aic:
+                                        best_aic = fitted_model.aic
+                                        best_params = (p, d, q, P, D, Q)
+                                        print(f"New best AIC: {best_aic:.2f} with params {best_params}")
+
+                                except:
+                                    continue
+
+        self.best_params = best_params
+        print(f"Best SARIMA parameters: {best_params} with AIC: {best_aic:.2f}")
+        return best_params
+
+    def fit(self, order=None, seasonal_order=None, s=24):
+        """
+        Fit SARIMA model with best parameters.
+        """
+        if order is None and self.best_params is not None:
+            p, d, q, P, D, Q = self.best_params
+            order = (p, d, q)
+            seasonal_order = (P, D, Q, s)
+        elif order is None:
+            # Default parameters if grid search not performed
+            order = (1, 1, 1)
+            seasonal_order = (1, 1, 1, s)
+
+        print(f"Fitting SARIMA model with order{order}, seasonal_order{seasonal_order}")
+
+        self.model = SARIMAX(
+            self.target_series,
+            order=order,
+            seasonal_order=seasonal_order,
+            enforce_stationarity=False,
+            enforce_invertibility=False
+        )
+
+        self.fitted_model = self.model.fit(disp=False)
+        return self.fitted_model
+
+    def forecast(self, steps=24):
+        """Generate multi-step forecast."""
+        forecast = self.fitted_model.get_forecast(steps=steps)
+        return forecast.predicted_mean, forecast.conf_int()
+
+# Prepare data for SARIMA (univariate)
+target_series = df['feature_1'].values
+
+# Split for SARIMA (maintain temporal order)
+sarima_split_idx = int(len(target_series) * 0.8)
+sarima_train = target_series[:sarima_split_idx]
+sarima_test = target_series[sarima_split_idx:]
+
+print(f"SARIMA training data: {len(sarima_train)} points")
+print(f"SARIMA testing data: {len(sarima_test)} points")
+
+# Initialize and tune SARIMA model
+sarima_model = SARIMAModel(sarima_train)
+
+# Perform grid search for hyperparameter tuning
+best_sarima_params = sarima_model.grid_search(
+    p_range=range(0, 2),
+    d_range=range(0, 2),
+    q_range=range(0, 2),
+    P_range=range(0, 2),
+    D_range=range(0, 2),
+    Q_range=range(0, 2),
+    s=24
+)
+
+# Fit the best model
+sarima_model.fit()
+
+# Generate forecasts
+sarima_forecasts, sarima_ci = sarima_model.forecast(steps=len(sarima_test))
+
+print(f"SARIMA forecasts shape: {sarima_forecasts.shape}")
+print(f"First 5 SARIMA forecasts: {sarima_forecasts[:5]}")
+
+# =============================================================================
+# TASK 3: LSTM Baseline Model with Hyperparameter Tuning (COMPLETE)
+# =============================================================================
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import ParameterGrid
+import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+class LSTMBaseline(nn.Module):
+    """
+    LSTM baseline model for time series forecasting.
+    """
+
+    def __init__(self, input_size=5, hidden_size=50, num_layers=2, output_size=24, dropout=0.2):
+        super(LSTMBaseline, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+
+        self.lstm = nn.LSTM(
+            input_size, hidden_size, num_layers,
+            batch_first=True, dropout=dropout if num_layers > 1 else 0
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        # LSTM forward
+        lstm_out, (hidden, cell) = self.lstm(x)
+
+        # Use the last hidden state for prediction
+        last_hidden = hidden[-1]  # Take the last layer
+        output = self.fc(self.dropout(last_hidden))
+
+        return output
+
+class LSTMTuner:
+    """
+    LSTM hyperparameter tuning using grid search.
+    """
+
+    def __init__(self, train_loader, test_loader, device):
+        self.train_loader = train_loader
+        self.test_loader = test_loader
+        self.device = device
+        self.best_params = None
+        self.best_model = None
+
+    def train_evaluate_lstm(self, params, epochs=30):
+        """Train and evaluate a single LSTM configuration."""
+        model = LSTMBaseline(
+            input_size=5,
+            hidden_size=params['hidden_size'],
+            num_layers=params['num_layers'],
+            dropout=params['dropout'],
+            output_size=24
+        ).to(self.device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=params['learning_rate'], weight_decay=1e-5)
+        criterion = nn.MSELoss()
+
+        # Training loop
+        model.train()
+        for epoch in range(epochs):
+            epoch_loss = 0
+            for batch_x, batch_y, batch_static in self.train_loader:
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device).squeeze(-1)
+
+                optimizer.zero_grad()
+                predictions = model(batch_x)
+                loss = criterion(predictions, batch_y)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                epoch_loss += loss.item()
+
+        # Evaluation
+        model.eval()
+        all_predictions = []
+        all_targets = []
+
+        with torch.no_grad():
+            for batch_x, batch_y, batch_static in self.test_loader:
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device).squeeze(-1)
+
+                predictions = model(batch_x)
+                all_predictions.extend(predictions.cpu().numpy())
+                all_targets.extend(batch_y.cpu().numpy())
+
+        all_predictions = np.array(all_predictions)
+        all_targets = np.array(all_targets)
+
+        # Calculate metrics
+        rmse = np.sqrt(mean_squared_error(all_targets, all_predictions))
+        mae = mean_absolute_error(all_targets, all_predictions)
+
+        return rmse, mae, model
+
+    def grid_search(self, param_grid, epochs=30):
+        """Perform grid search for hyperparameter tuning."""
+        print("Performing LSTM hyperparameter tuning...")
+        best_rmse = float('inf')
+        best_params = None
+        best_mae = float('inf')
+
+        # Test each parameter combination
+        for i, params in enumerate(ParameterGrid(param_grid)):
+            print(f"Testing LSTM configuration {i+1}/{len(list(ParameterGrid(param_grid)))}: {params}")
+
+            rmse, mae, model = self.train_evaluate_lstm(params, epochs)
+
+            if rmse < best_rmse:
+                best_rmse = rmse
+                best_mae = mae
+                best_params = params
+                self.best_model = model
+                print(f" New best: RMSE = {rmse:.4f}, MAE = {mae:.4f} with params {params}")
+            else:
+                print(f"      Current: RMSE = {rmse:.4f}, MAE = {mae:.4f}")
+
+        self.best_params = best_params
+        print(f"\n Best LSTM parameters: {best_params}")
+        print(f" Best RMSE: {best_rmse:.4f}, Best MAE: {best_mae:.4f}")
+        return best_params, best_rmse, best_mae
+
+# Define hyperparameter grid for LSTM (reduced for efficiency)
+lstm_param_grid = {
+    'hidden_size': [32, 64],
+    'num_layers': [1, 2],
+    'dropout': [0.1, 0.2],
+    'learning_rate': [0.001, 0.0005]
+}
+
+print(f"Total LSTM configurations to test: {len(list(ParameterGrid(lstm_param_grid)))}")
+
+# Perform LSTM hyperparameter tuning
+lstm_tuner = LSTMTuner(train_loader, test_loader, device)
+best_lstm_params, best_lstm_rmse, best_lstm_mae = lstm_tuner.grid_search(lstm_param_grid, epochs=30)
+
+# Save the best LSTM model
+torch.save(lstm_tuner.best_model.state_dict(), 'best_lstm_model.pth')
+print(" LSTM hyperparameter tuning completed!")
+
+# Test the best LSTM model
+lstm_tuner.best_model.eval()
+test_predictions = []
+test_targets = []
+
+with torch.no_grad():
+    for batch_x, batch_y, batch_static in test_loader:
+        batch_x = batch_x.to(device)
+        batch_y = batch_y.to(device).squeeze(-1)
+
+        predictions = lstm_tuner.best_model(batch_x)
+        test_predictions.extend(predictions.cpu().numpy())
+        test_targets.extend(batch_y.cpu().numpy())
+
+test_predictions = np.array(test_predictions)
+test_targets = np.array(test_targets)
+
+print(f"\n Best LSTM Model Performance:")
+print(f"Final Test RMSE: {np.sqrt(mean_squared_error(test_targets, test_predictions)):.4f}")
+print(f"Final Test MAE: {mean_absolute_error(test_targets, test_predictions):.4f}")
+
+# =============================================================================
+# TASK 3: TFT Hyperparameter Tuning (COMPLETE)
+# =============================================================================
+
+class TFTTuner:
+    """
+    TFT hyperparameter tuning for optimal performance.
+    """
+
+    def __init__(self, train_loader, test_loader, device):
+        self.train_loader = train_loader
+        self.test_loader = test_loader
+        self.device = device
+        self.best_params = None
+        self.best_model = None
+
+    def train_evaluate_tft(self, params, epochs=20):
+        """Train and evaluate a single TFT configuration."""
+        model = TemporalFusionTransformer(
+            sequence_length=168,
+            forecast_horizon=24,
+            num_features=5,
+            num_static_features=2,
+            hidden_size=params['hidden_size'],
+            num_heads=params['num_heads'],
+            dropout=params['dropout'],
+            num_layers=params['num_layers']
+        ).to(self.device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=params['learning_rate'], weight_decay=1e-5)
+        criterion = nn.MSELoss()
+
+        # Training loop
+        model.train()
+        for epoch in range(epochs):
+            total_loss = 0
+            for batch_x, batch_y, batch_static in self.train_loader:
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device)
+                batch_static = batch_static.to(self.device)
+
+                optimizer.zero_grad()
+                predictions, _, _ = model(batch_x, batch_static)
+                loss = criterion(predictions, batch_y.squeeze(-1))
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                total_loss += loss.item()
+
+        # Evaluation
+        model.eval()
+        all_predictions = []
+        all_targets = []
+
+        with torch.no_grad():
+            for batch_x, batch_y, batch_static in self.test_loader:
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device)
+                batch_static = batch_static.to(self.device)
+
+                predictions, _, _ = model(batch_x, batch_static)
+                all_predictions.extend(predictions.cpu().numpy())
+                all_targets.extend(batch_y.squeeze(-1).cpu().numpy())
+
+        all_predictions = np.array(all_predictions)
+        all_targets = np.array(all_targets)
+
+        # Calculate metrics
+        rmse = np.sqrt(mean_squared_error(all_targets, all_predictions))
+        mae = mean_absolute_error(all_targets, all_predictions)
+
+        return rmse, mae, model
+
+    def grid_search(self, epochs=20):
+        """Perform grid search for TFT hyperparameters."""
+        print("Performing TFT hyperparameter tuning...")
+        best_rmse = float('inf')
+        best_params = None
+        best_mae = float('inf')
+
+        # TFT parameter configurations to test
+        tft_configs = [
+            {'hidden_size': 64, 'num_heads': 4, 'dropout': 0.1, 'num_layers': 2, 'learning_rate': 0.001},
+            {'hidden_size': 32, 'num_heads': 2, 'dropout': 0.2, 'num_layers': 1, 'learning_rate': 0.001},
+            {'hidden_size': 64, 'num_heads': 2, 'dropout': 0.1, 'num_layers': 2, 'learning_rate': 0.0005},
+        ]
+
+        for i, params in enumerate(tft_configs):
+            print(f"Testing TFT configuration {i+1}/{len(tft_configs)}: {params}")
+
+            rmse, mae, model = self.train_evaluate_tft(params, epochs)
+
+            if rmse < best_rmse:
+                best_rmse = rmse
+                best_mae = mae
+                best_params = params
+                self.best_model = model
+                print(f" New best: RMSE = {rmse:.4f}, MAE = {mae:.4f} with params {params}")
+            else:
+                print(f"      Current: RMSE = {rmse:.4f}, MAE = {mae:.4f}")
+
+        self.best_params = best_params
+        print(f"\n Best TFT parameters: {best_params}")
+        print(f" Best RMSE: {best_rmse:.4f}, Best MAE: {best_mae:.4f}")
+        return best_params, best_rmse, best_mae
+
+# Perform TFT hyperparameter tuning
+tft_tuner = TFTTuner(train_loader, test_loader, device)
+best_tft_params, best_tft_rmse, best_tft_mae = tft_tuner.grid_search(epochs=20)
+
+# Save the best TFT model
+torch.save(tft_tuner.best_model.state_dict(), 'best_tft_tuned_model.pth')
+print(" TFT hyperparameter tuning completed!")
+
+# Test the best TFT model
+tft_tuner.best_model.eval()
+test_predictions = []
+test_targets = []
+
+with torch.no_grad():
+    for batch_x, batch_y, batch_static in test_loader:
+        batch_x = batch_x.to(device)
+        batch_y = batch_y.to(device)
+        batch_static = batch_static.to(device)
+
+        predictions, _, _ = tft_tuner.best_model(batch_x, batch_static)
+        test_predictions.extend(predictions.cpu().numpy())
+        test_targets.extend(batch_y.squeeze(-1).cpu().numpy())
+
+test_predictions = np.array(test_predictions)
+test_targets = np.array(test_targets)
+
+# After your current TFT implementation and basic training...
+
+# =============================================================================
+# 6. ADVANCED HYPERPARAMETER OPTIMIZATION
+# =============================================================================
+
+print("🔧 INITIATING COMPREHENSIVE HYPERPARAMETER OPTIMIZATION")
+print("="*60)
+
+print(f"\n Best TFT Model Performance:")
+print(f"Final Test RMSE: {np.sqrt(mean_squared_error(test_targets, test_predictions)):.4f}")
+print(f"Final Test MAE: {mean_absolute_error(test_targets, test_predictions):.4f}")
+
+
+
